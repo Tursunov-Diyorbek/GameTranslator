@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ResultCard } from './components/ResultCard'
 import { SettingsModal } from './components/SettingsModal'
+import { imageFingerprint, readClipboardImage } from './lib/clipboard'
 import { codeToVk, hotkeyLabel } from './lib/hotkey'
 import { prepareImage } from './lib/image'
+import { detectNative } from './lib/platform'
+import { canOpenPip, notifyTranslation, openPipWindow, renderPip } from './lib/pipOverlay'
 import { loadHistory, loadSettings, saveHistory, saveSettings } from './lib/storage'
 import { translateScreenshot } from './lib/translate'
 import type { Settings, TranslationResult } from './types'
@@ -26,10 +29,11 @@ export default function App() {
   const nativeRef = useRef(false)
   const settingsOpenRef = useRef(false)
   const ingestRef = useRef<(image: string) => void>(() => {})
-  const fileRef = useRef<HTMLInputElement>(null)
+  const pipRef = useRef<Window | null>(null)
+  const seenClipRef = useRef('')
 
   const [settings, setSettings] = useState<Settings>(() => loadSettings())
-  const [native, setNative] = useState(false)
+  const [native, setNative] = useState<boolean | null>(null)
   const [active, setActive] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -38,9 +42,19 @@ export default function App() {
   const [current, setCurrent] = useState<TranslationResult | null>(null)
 
   activeRef.current = active
-  nativeRef.current = native
+  nativeRef.current = native === true
   busyRef.current = busy
   settingsOpenRef.current = settingsOpen
+
+  const closePip = useCallback(() => {
+    const win = pipRef.current
+    pipRef.current = null
+    try {
+      win?.close()
+    } catch {
+      /* ignore */
+    }
+  }, [])
 
   const applyItem = useCallback((item: TranslationResult) => {
     setCurrent(item)
@@ -53,6 +67,11 @@ export default function App() {
     setBusy(false)
     setError('')
     busyRef.current = false
+    const pip = pipRef.current
+    if (pip && !pip.closed) {
+      renderPip(pip, { status: 'done', translation: item.translation, note: item.note })
+    }
+    notifyTranslation(item.translation)
   }, [])
 
   const loadLastResult = useCallback(async () => {
@@ -69,8 +88,10 @@ export default function App() {
       busyRef.current = true
       setBusy(true)
       setError('')
+      const pip = pipRef.current
+      if (pip && !pip.closed) renderPip(pip, { status: 'busy' })
       try {
-        const prepared = await prepareImage(image)
+        const prepared = nativeRef.current ? image : await prepareImage(image)
         const payload = await translateScreenshot(prepared, settings.apiKey)
         applyItem({
           id: newId(),
@@ -81,9 +102,11 @@ export default function App() {
           note: payload.note,
         })
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Tarjima muvaffaqiyatsiz')
+        const message = err instanceof Error ? err.message : 'Tarjima muvaffaqiyatsiz'
+        setError(message)
         busyRef.current = false
         setBusy(false)
+        if (pip && !pip.closed) renderPip(pip, { status: 'error', error: message })
       }
     },
     [applyItem, settings.apiKey],
@@ -94,14 +117,11 @@ export default function App() {
   }
 
   useEffect(() => {
-    void fetch('/api/platform')
-      .then((res) => (res.ok ? res.json() : { native: false }))
-      .then((body: { native?: boolean }) => setNative(Boolean(body.native)))
-      .catch(() => setNative(false))
+    void detectNative().then(setNative)
   }, [])
 
   useEffect(() => {
-    if (!native) return
+    if (native !== true) return
     const snipVk = codeToVk(settings.hotkey)
     const toggleVk = codeToVk(settings.toggleHotkey)
     void fetch(
@@ -110,7 +130,7 @@ export default function App() {
   }, [active, native, settings.hotkey, settings.toggleHotkey])
 
   useEffect(() => {
-    if (!native) return
+    if (native !== true) return
     const snipVk = codeToVk(settings.hotkey)
     const toggleVk = codeToVk(settings.toggleHotkey)
     if (!snipVk) return
@@ -156,7 +176,7 @@ export default function App() {
   }, [loadLastResult, native, settings.hotkey, settings.toggleHotkey])
 
   useEffect(() => {
-    if (!native) return
+    if (native !== true) return
 
     async function syncFromServer() {
       try {
@@ -186,9 +206,60 @@ export default function App() {
   }, [loadLastResult, native])
 
   useEffect(() => {
+    if (native !== false || !active) {
+      if (!active) closePip()
+      return
+    }
+
+    let cancelled = false
+    let timer = 0
+
+    const onFocus = () => {
+      void ingestClipboard()
+    }
+
+    async function ingestClipboard() {
+      if (cancelled || !activeRef.current || busyRef.current || settingsOpenRef.current) return
+      try {
+        const image = await readClipboardImage()
+        if (!image) return
+        const mark = imageFingerprint(image)
+        if (mark === seenClipRef.current) return
+        seenClipRef.current = mark
+        ingestRef.current(image)
+      } catch {
+        /* clipboard permission or empty */
+      }
+    }
+
+    void (async () => {
+      try {
+        const currentImage = await readClipboardImage()
+        if (!cancelled) {
+          seenClipRef.current = currentImage ? imageFingerprint(currentImage) : ''
+        }
+      } catch {
+        if (!cancelled) seenClipRef.current = ''
+      }
+      if (cancelled) return
+      timer = window.setInterval(() => {
+        void ingestClipboard()
+      }, 700)
+    })()
+
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+    }
+  }, [active, closePip, native])
+
+  useEffect(() => {
     function onPaste(e: ClipboardEvent) {
-      if (settingsOpenRef.current) return
-      if (nativeRef.current && !activeRef.current) return
+      if (!activeRef.current || settingsOpenRef.current) return
       const item = [...(e.clipboardData?.items ?? [])].find((entry) =>
         entry.type.startsWith('image/'),
       )
@@ -207,14 +278,37 @@ export default function App() {
     saveSettings(next)
   }
 
-  async function onPickFile(file: File | undefined) {
-    if (!file) return
-    const url = await blobToDataUrl(file)
-    ingestRef.current(url)
+  async function togglePower() {
+    setError('')
+    if (active) {
+      setActive(false)
+      closePip()
+      return
+    }
+    if (native === false) {
+      try {
+        await Notification.requestPermission()
+      } catch {
+        /* ignore */
+      }
+      if (canOpenPip()) {
+        try {
+          const win = await openPipWindow()
+          pipRef.current = win
+          win?.addEventListener('pagehide', () => {
+            if (pipRef.current === win) pipRef.current = null
+          })
+        } catch {
+          /* PiP ixtiyoriy */
+        }
+      }
+    }
+    setActive(true)
   }
 
   const snipLabel = hotkeyLabel(settings.hotkey)
   const toggleLabel = hotkeyLabel(settings.toggleHotkey)
+  const webLive = native === false
 
   return (
     <div className="app">
@@ -228,45 +322,41 @@ export default function App() {
         </div>
 
         <div className="top-actions">
-          <span className={`status ${!native || active ? 'on' : ''}`}>
+          <span className={`status ${active ? 'on' : ''}`}>
             <i />
-            {native ? (active ? 'Faol' : 'Faol emas') : 'Onlayn'}
+            {active ? 'Faol' : 'Faol emas'}
           </span>
-          {native ? (
-            <button type="button" className="ghost-btn" onClick={() => setSettingsOpen(true)}>
-              Sozlamalar
-            </button>
-          ) : null}
+          <button type="button" className="ghost-btn" onClick={() => setSettingsOpen(true)}>
+            Sozlamalar
+          </button>
         </div>
       </header>
 
       <section className="command">
         <div className="command-main hud-frame">
-          {native ? (
-            <button
-              type="button"
-              className={`power ${active ? 'stop' : 'start'}`}
-              onClick={() => {
-                setError('')
-                setActive((value) => !value)
-              }}
-            >
-              <strong>{active ? 'Stop' : 'Start'}</strong>
-              <span>{active ? 'Tarjimonni o‘chirish' : 'Tarjimonni yoqish'}</span>
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="power start"
-              onClick={() => fileRef.current?.click()}
-            >
-              <strong>Yuklash</strong>
-              <span>Skrinshot tanlash</span>
-            </button>
-          )}
+          <button
+            type="button"
+            className={`power ${active ? 'stop' : 'start'}`}
+            onClick={() => {
+              void togglePower()
+            }}
+          >
+            <strong>{active ? 'Stop' : 'Start'}</strong>
+            <span>{active ? 'Tarjimonni o‘chirish' : 'Tarjimonni yoqish'}</span>
+          </button>
 
           <div className="meta">
-            {native ? (
+            {webLive ? (
+              <>
+                <p>
+                  Kesish <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>
+                </p>
+                <p className="muted small">
+                  Start bosing, o‘yinda joyni kesing — tarjima suzib yuruvchi oynada chiqadi. Sayt
+                  ochiq qolsin (ikkinchi monitor yoki yon panel).
+                </p>
+              </>
+            ) : (
               <>
                 <p>
                   Yoqish/o‘chirish <kbd>{toggleLabel}</kbd>
@@ -278,32 +368,10 @@ export default function App() {
                   ekran o‘yinlarda borderless yoki windowed rejim kerak.
                 </p>
               </>
-            ) : (
-              <>
-                <p>
-                  Skrinshotni yuklang yoki <kbd>Ctrl</kbd>+<kbd>V</kbd> bilan qo‘ying.
-                </p>
-                <p className="muted small">
-                  O‘yin ustida tugma va suzib yuruvchi oyna faqat kompyuterdagi dasturda ishlaydi
-                  (`npm run dev`). Bu saytda rasm yuborib tarjima qilinadi.
-                </p>
-              </>
             )}
           </div>
         </div>
       </section>
-
-      <input
-        ref={fileRef}
-        className="file-input"
-        type="file"
-        accept="image/*"
-        onChange={(e) => {
-          const file = e.target.files?.[0]
-          e.target.value = ''
-          void onPickFile(file)
-        }}
-      />
 
       {error ? <p className="banner error">{error}</p> : null}
       {busy ? <p className="banner pulse">Matn o‘qilmoqda va tarjima qilinmoqda…</p> : null}
@@ -313,15 +381,18 @@ export default function App() {
           <ResultCard item={current} busy={busy} />
         ) : (
           <div className="empty hud-frame">
-            <h2>{native ? 'Tarjima o‘yin ustida ham chiqadi' : 'Skrinshot yuboring'}</h2>
+            <h2>Tarjima o‘yin ustida ham chiqadi</h2>
             <p>
-              {native ? (
+              {webLive ? (
+                <>
+                  Start, keyin <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> — kesilgan matn avtomatik
+                  tarjima qilinadi.
+                </>
+              ) : (
                 <>
                   <kbd>{toggleLabel}</kbd> yoki Start, keyin o‘yinga qayting. <kbd>{snipLabel}</kbd>{' '}
                   bilan joyni belgilang — tarjima burchakda ochiladi.
                 </>
-              ) : (
-                <>O‘yindagi yozuvni skrinshot qiling, keyin yuklang yoki bu yerga qo‘ying.</>
               )}
             </p>
           </div>
@@ -360,14 +431,12 @@ export default function App() {
         </section>
       ) : null}
 
-      {native ? (
-        <SettingsModal
-          open={settingsOpen}
-          settings={settings}
-          onClose={() => setSettingsOpen(false)}
-          onSave={persistSettings}
-        />
-      ) : null}
+      <SettingsModal
+        open={settingsOpen}
+        settings={settings}
+        onClose={() => setSettingsOpen(false)}
+        onSave={persistSettings}
+      />
     </div>
   )
 }
