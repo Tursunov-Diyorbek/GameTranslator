@@ -253,6 +253,10 @@ kbd {
   line-height: 1.5;
 }
 
+.file-input {
+  display: none;
+}
+
 .preview {
   padding: 14px;
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ResultCard } from './components/ResultCard'
 import { SettingsModal } from './components/SettingsModal'
 import { codeToVk, hotkeyLabel } from './lib/hotkey'
+import { prepareImage } from './lib/image'
 import { loadHistory, loadSettings, saveHistory, saveSettings } from './lib/storage'
 import { translateScreenshot } from './lib/translate'
 import type { Settings, TranslationResult } from './types'
@@ -22,10 +23,13 @@ function blobToDataUrl(blob: Blob) {
 export default function App() {
   const busyRef = useRef(false)
   const activeRef = useRef(false)
+  const nativeRef = useRef(false)
   const settingsOpenRef = useRef(false)
   const ingestRef = useRef<(image: string) => void>(() => {})
+  const fileRef = useRef<HTMLInputElement>(null)
 
   const [settings, setSettings] = useState<Settings>(() => loadSettings())
+  const [native, setNative] = useState(false)
   const [active, setActive] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -34,6 +38,7 @@ export default function App() {
   const [current, setCurrent] = useState<TranslationResult | null>(null)
 
   activeRef.current = active
+  nativeRef.current = native
   busyRef.current = busy
   settingsOpenRef.current = settingsOpen
 
@@ -65,11 +70,12 @@ export default function App() {
       setBusy(true)
       setError('')
       try {
-        const payload = await translateScreenshot(image, settings.apiKey)
+        const prepared = await prepareImage(image)
+        const payload = await translateScreenshot(prepared, settings.apiKey)
         applyItem({
           id: newId(),
           createdAt: Date.now(),
-          image,
+          image: prepared,
           original: payload.original,
           translation: payload.translation,
           note: payload.note,
@@ -88,14 +94,23 @@ export default function App() {
   }
 
   useEffect(() => {
+    void fetch('/api/platform')
+      .then((res) => (res.ok ? res.json() : { native: false }))
+      .then((body: { native?: boolean }) => setNative(Boolean(body.native)))
+      .catch(() => setNative(false))
+  }, [])
+
+  useEffect(() => {
+    if (!native) return
     const snipVk = codeToVk(settings.hotkey)
     const toggleVk = codeToVk(settings.toggleHotkey)
     void fetch(
       `/api/armed?on=${active ? '1' : '0'}&vk=${snipVk || 0}&toggleVk=${toggleVk ?? 0}`,
     )
-  }, [active, settings.hotkey, settings.toggleHotkey])
+  }, [active, native, settings.hotkey, settings.toggleHotkey])
 
   useEffect(() => {
+    if (!native) return
     const snipVk = codeToVk(settings.hotkey)
     const toggleVk = codeToVk(settings.toggleHotkey)
     if (!snipVk) return
@@ -138,9 +153,11 @@ export default function App() {
       }
     }
     return () => source.close()
-  }, [loadLastResult, settings.hotkey, settings.toggleHotkey])
+  }, [loadLastResult, native, settings.hotkey, settings.toggleHotkey])
 
   useEffect(() => {
+    if (!native) return
+
     async function syncFromServer() {
       try {
         const res = await fetch('/api/armed')
@@ -166,11 +183,12 @@ export default function App() {
     return () => {
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [loadLastResult])
+  }, [loadLastResult, native])
 
   useEffect(() => {
     function onPaste(e: ClipboardEvent) {
-      if (!activeRef.current || settingsOpenRef.current) return
+      if (settingsOpenRef.current) return
+      if (nativeRef.current && !activeRef.current) return
       const item = [...(e.clipboardData?.items ?? [])].find((entry) =>
         entry.type.startsWith('image/'),
       )
@@ -189,6 +207,12 @@ export default function App() {
     saveSettings(next)
   }
 
+  async function onPickFile(file: File | undefined) {
+    if (!file) return
+    const url = await blobToDataUrl(file)
+    ingestRef.current(url)
+  }
+
   const snipLabel = hotkeyLabel(settings.hotkey)
   const toggleLabel = hotkeyLabel(settings.toggleHotkey)
 
@@ -204,43 +228,82 @@ export default function App() {
         </div>
 
         <div className="top-actions">
-          <span className={`status ${active ? 'on' : ''}`}>
+          <span className={`status ${!native || active ? 'on' : ''}`}>
             <i />
-            {active ? 'Faol' : 'Faol emas'}
+            {native ? (active ? 'Faol' : 'Faol emas') : 'Onlayn'}
           </span>
-          <button type="button" className="ghost-btn" onClick={() => setSettingsOpen(true)}>
-            Sozlamalar
-          </button>
+          {native ? (
+            <button type="button" className="ghost-btn" onClick={() => setSettingsOpen(true)}>
+              Sozlamalar
+            </button>
+          ) : null}
         </div>
       </header>
 
       <section className="command">
         <div className="command-main hud-frame">
-          <button
-            type="button"
-            className={`power ${active ? 'stop' : 'start'}`}
-            onClick={() => {
-              setError('')
-              setActive((value) => !value)
-            }}
-          >
-            <strong>{active ? 'Stop' : 'Start'}</strong>
-            <span>{active ? 'Tarjimonni o‘chirish' : 'Tarjimonni yoqish'}</span>
-          </button>
+          {native ? (
+            <button
+              type="button"
+              className={`power ${active ? 'stop' : 'start'}`}
+              onClick={() => {
+                setError('')
+                setActive((value) => !value)
+              }}
+            >
+              <strong>{active ? 'Stop' : 'Start'}</strong>
+              <span>{active ? 'Tarjimonni o‘chirish' : 'Tarjimonni yoqish'}</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="power start"
+              onClick={() => fileRef.current?.click()}
+            >
+              <strong>Yuklash</strong>
+              <span>Skrinshot tanlash</span>
+            </button>
+          )}
 
           <div className="meta">
-            <p>
-              Yoqish/o‘chirish <kbd>{toggleLabel}</kbd>
-              {' · '}
-              Skrinshot <kbd>{snipLabel}</kbd>
-            </p>
-            <p className="muted small">
-              1 ekran: Start bosing, o‘yinga qayting — tarjima o‘yin ustida chiqadi. Ba’zi to‘liq
-              ekran o‘yinlarda borderless yoki windowed rejim kerak.
-            </p>
+            {native ? (
+              <>
+                <p>
+                  Yoqish/o‘chirish <kbd>{toggleLabel}</kbd>
+                  {' · '}
+                  Skrinshot <kbd>{snipLabel}</kbd>
+                </p>
+                <p className="muted small">
+                  1 ekran: Start bosing, o‘yinga qayting — tarjima o‘yin ustida chiqadi. Ba’zi to‘liq
+                  ekran o‘yinlarda borderless yoki windowed rejim kerak.
+                </p>
+              </>
+            ) : (
+              <>
+                <p>
+                  Skrinshotni yuklang yoki <kbd>Ctrl</kbd>+<kbd>V</kbd> bilan qo‘ying.
+                </p>
+                <p className="muted small">
+                  O‘yin ustida tugma va suzib yuruvchi oyna faqat kompyuterdagi dasturda ishlaydi
+                  (`npm run dev`). Bu saytda rasm yuborib tarjima qilinadi.
+                </p>
+              </>
+            )}
           </div>
         </div>
       </section>
+
+      <input
+        ref={fileRef}
+        className="file-input"
+        type="file"
+        accept="image/*"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          e.target.value = ''
+          void onPickFile(file)
+        }}
+      />
 
       {error ? <p className="banner error">{error}</p> : null}
       {busy ? <p className="banner pulse">Matn o‘qilmoqda va tarjima qilinmoqda…</p> : null}
@@ -250,10 +313,16 @@ export default function App() {
           <ResultCard item={current} busy={busy} />
         ) : (
           <div className="empty hud-frame">
-            <h2>Tarjima o‘yin ustida ham chiqadi</h2>
+            <h2>{native ? 'Tarjima o‘yin ustida ham chiqadi' : 'Skrinshot yuboring'}</h2>
             <p>
-              <kbd>{toggleLabel}</kbd> yoki Start, keyin o‘yinga qayting. <kbd>{snipLabel}</kbd>{' '}
-              bilan joyni belgilang — tarjima burchakda ochiladi.
+              {native ? (
+                <>
+                  <kbd>{toggleLabel}</kbd> yoki Start, keyin o‘yinga qayting. <kbd>{snipLabel}</kbd>{' '}
+                  bilan joyni belgilang — tarjima burchakda ochiladi.
+                </>
+              ) : (
+                <>O‘yindagi yozuvni skrinshot qiling, keyin yuklang yoki bu yerga qo‘ying.</>
+              )}
             </p>
           </div>
         )}
@@ -291,12 +360,14 @@ export default function App() {
         </section>
       ) : null}
 
-      <SettingsModal
-        open={settingsOpen}
-        settings={settings}
-        onClose={() => setSettingsOpen(false)}
-        onSave={persistSettings}
-      />
+      {native ? (
+        <SettingsModal
+          open={settingsOpen}
+          settings={settings}
+          onClose={() => setSettingsOpen(false)}
+          onSave={persistSettings}
+        />
+      ) : null}
     </div>
   )
 }

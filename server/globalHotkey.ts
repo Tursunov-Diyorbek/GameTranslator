@@ -158,6 +158,7 @@ function setArmed(on: boolean) {
   if (on) {
     if (lastVk > 0) ensureWatcher(lastVk, lastToggleVk)
     ensureOverlay()
+    pushOverlay({ status: 'armed' })
     return
   }
   stopOverlay()
@@ -204,6 +205,7 @@ function onWatcherLine(token: string) {
   }
   if (token === 'CANCEL') {
     broadcast('cancel')
+    pushOverlay({ status: 'armed' })
     return
   }
   if (token === 'TOGGLE') {
@@ -324,6 +326,12 @@ function attachHotkeyEndpoint(server: { middlewares: ViteDevServer['middlewares'
   }
   server.middlewares.use((req, res, next) => {
     const url = req.url ?? ''
+
+    if (url.startsWith('/api/platform')) {
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ native: process.platform === 'win32' }))
+      return
+    }
 
     if (url.startsWith('/api/translate')) {
       if (req.method !== 'POST') {

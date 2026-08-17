@@ -65,6 +65,70 @@ $form.Padding = New-Object System.Windows.Forms.Padding 0
 $form.KeyPreview = $true
 $form.Visible = $false
 
+$script:badgePlaced = $false
+$script:badgeDrag = $false
+$script:badgeDragX = 0
+$script:badgeDragY = 0
+
+$badge = New-Object GtOverlayForm
+$badge.Text = 'GT'
+$badge.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+$badge.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+$badge.ShowInTaskbar = $false
+$badge.TopMost = $true
+$badge.ControlBox = $false
+$badge.Width = 72
+$badge.Height = 26
+$badge.BackColor = [System.Drawing.Color]::FromArgb(10, 16, 12)
+$badge.Opacity = 0.92
+$badge.Visible = $false
+
+$badgeDot = New-Object System.Windows.Forms.Label
+$badgeDot.Text = [char]0x25CF
+$badgeDot.Font = [System.Drawing.Font]::new('Segoe UI', 9.0)
+$badgeDot.ForeColor = [System.Drawing.Color]::FromArgb(198, 255, 74)
+$badgeDot.AutoSize = $true
+$badgeDot.Location = New-Object System.Drawing.Point 8, 4
+
+$badgeText = New-Object System.Windows.Forms.Label
+$badgeText.Text = 'ON'
+$badgeText.Font = [System.Drawing.Font]::new('Segoe UI', 9.0, [System.Drawing.FontStyle]::Bold)
+$badgeText.ForeColor = [System.Drawing.Color]::FromArgb(198, 255, 74)
+$badgeText.AutoSize = $true
+$badgeText.Location = New-Object System.Drawing.Point 26, 4
+
+$badge.Controls.Add($badgeDot)
+$badge.Controls.Add($badgeText)
+
+$badge.Add_Paint({
+  param($sender, $e)
+  $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(160, 198, 255, 74), 1)
+  $e.Graphics.DrawRectangle($pen, 0, 0, $badge.Width - 1, $badge.Height - 1)
+  $pen.Dispose()
+})
+
+function Start-BadgeDrag($e) {
+  $script:badgeDrag = $true
+  $script:badgeDragX = $e.X
+  $script:badgeDragY = $e.Y
+}
+function Do-BadgeDrag($e) {
+  if (-not $script:badgeDrag) { return }
+  $badge.Left = $badge.Left + $e.X - $script:badgeDragX
+  $badge.Top = $badge.Top + $e.Y - $script:badgeDragY
+}
+function Stop-BadgeDrag { $script:badgeDrag = $false }
+
+$badge.Add_MouseDown({ param($s, $e) Start-BadgeDrag $e })
+$badge.Add_MouseMove({ param($s, $e) Do-BadgeDrag $e })
+$badge.Add_MouseUp({ Stop-BadgeDrag })
+$badgeDot.Add_MouseDown({ param($s, $e) Start-BadgeDrag $e })
+$badgeDot.Add_MouseMove({ param($s, $e) Do-BadgeDrag $e })
+$badgeDot.Add_MouseUp({ Stop-BadgeDrag })
+$badgeText.Add_MouseDown({ param($s, $e) Start-BadgeDrag $e })
+$badgeText.Add_MouseMove({ param($s, $e) Do-BadgeDrag $e })
+$badgeText.Add_MouseUp({ Stop-BadgeDrag })
+
 $titleFont = [System.Drawing.Font]::new('Segoe UI', 11.0, [System.Drawing.FontStyle]::Bold)
 $bodyFont = [System.Drawing.Font]::new('Segoe UI', 13.0)
 $noteFont = [System.Drawing.Font]::new('Segoe UI', 10.0)
@@ -125,7 +189,31 @@ $hideTimer.Interval = 20000
 $hideTimer.Add_Tick({
   $hideTimer.Stop()
   Hide-Overlay
+  Show-Badge
 })
+
+function Place-Badge {
+  $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+  $badge.Left = $wa.Right - $badge.Width - 16
+  $badge.Top = $wa.Bottom - $badge.Height - 16
+  $script:badgePlaced = $true
+}
+
+function Show-Badge {
+  if (-not $script:badgePlaced) { Place-Badge }
+  [GtOverlayNative]::ShowWindow($badge.Handle, [GtOverlayNative]::SW_SHOWNOACTIVATE)
+  [GtOverlayNative]::SetWindowPos(
+    $badge.Handle,
+    [IntPtr][GtOverlayNative]::HWND_TOPMOST,
+    0, 0, 0, 0,
+    [GtOverlayNative]::SWP_NOMOVE -bor [GtOverlayNative]::SWP_NOSIZE -bor [GtOverlayNative]::SWP_NOACTIVATE -bor [GtOverlayNative]::SWP_SHOWWINDOW
+  )
+  $badge.Visible = $true
+}
+
+function Hide-Badge {
+  $badge.Hide()
+}
 
 function Place-Default {
   $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
@@ -203,6 +291,12 @@ function Update-FromFile {
   $status = [string]$obj.status
   if ($status -eq 'hide') {
     Hide-Overlay
+    Hide-Badge
+    return
+  }
+  if ($status -eq 'armed') {
+    Hide-Overlay
+    Show-Badge
     return
   }
 
@@ -239,6 +333,7 @@ function Update-FromFile {
 
   Update-Layout
   Show-Overlay
+  Show-Badge
 }
 
 $script:booted = $false
@@ -246,6 +341,7 @@ $form.Add_Shown({
   if ($script:booted) { return }
   $script:booted = $true
   $form.Hide()
+  [void]$badge.Handle
   Update-FromFile
 })
 
@@ -264,10 +360,14 @@ $form.Add_KeyDown({
   param($sender, $e)
   if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Escape) {
     Hide-Overlay
+    Show-Badge
   }
 })
 
-$closeBtn.Add_Click({ Hide-Overlay })
+$closeBtn.Add_Click({
+  Hide-Overlay
+  Show-Badge
+})
 $closeBtn.Add_MouseEnter({ $closeBtn.ForeColor = [System.Drawing.Color]::FromArgb(255, 109, 109) })
 $closeBtn.Add_MouseLeave({ $closeBtn.ForeColor = [System.Drawing.Color]::FromArgb(139, 155, 143) })
 
@@ -301,6 +401,7 @@ $poll.Add_Tick({
   $esc = (([GtOverlayNative]::GetAsyncKeyState(0x1B) -band 0x8000) -ne 0)
   if ($esc -and -not $script:escDown) {
     Hide-Overlay
+    Show-Badge
   }
   $script:escDown = $esc
 })

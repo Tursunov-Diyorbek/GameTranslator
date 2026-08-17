@@ -120,7 +120,9 @@ export async function translateWithGemini(
   dataUrl: string,
 ): Promise<TranslatePayload> {
   const key = getServerApiKey(apiKey)
-  if (!key) throw new Error('Tarjima hozircha sozlanmagan. Administrator .env fayliga GEMINI_API_KEY qo‘ysin.')
+  if (!key) {
+    throw new Error('Tarjima sozlanmagan. GEMINI_API_KEY o‘rnatilmagan.')
+  }
 
   const comma = dataUrl.indexOf(',')
   const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl

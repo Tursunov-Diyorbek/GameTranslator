@@ -18,6 +18,9 @@ export async function translateScreenshot(
 
   const body = (await res.json().catch(() => ({}))) as TranslatePayload & { error?: string }
   if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error('Tarjima API topilmadi. Vercel deploy yangilanmagan yoki GEMINI_API_KEY yo‘q.')
+    }
     throw new Error(body.error || `Tarjima xatosi (${res.status})`)
   }
   return {
