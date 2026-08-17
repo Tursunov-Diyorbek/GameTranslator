@@ -121,8 +121,9 @@ function Open-SnipSession {
 }
 
 function Start-SnipOverlay {
-  [GtNative]::SendWinShiftS()
   Open-SnipSession
+  Start-Sleep -Milliseconds 180
+  [GtNative]::SendWinShiftS()
 }
 
 function Close-SnipSession([string]$result) {
