@@ -308,7 +308,6 @@ export default function App() {
 
   const snipLabel = hotkeyLabel(settings.hotkey)
   const toggleLabel = hotkeyLabel(settings.toggleHotkey)
-  const webLive = native === false
 
   return (
     <div className="app">
@@ -346,29 +345,15 @@ export default function App() {
           </button>
 
           <div className="meta">
-            {webLive ? (
-              <>
-                <p>
-                  Kesish <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>
-                </p>
-                <p className="muted small">
-                  Start bosing, o‘yinda joyni kesing — tarjima suzib yuruvchi oynada chiqadi. Sayt
-                  ochiq qolsin (ikkinchi monitor yoki yon panel).
-                </p>
-              </>
-            ) : (
-              <>
-                <p>
-                  Yoqish/o‘chirish <kbd>{toggleLabel}</kbd>
-                  {' · '}
-                  Skrinshot <kbd>{snipLabel}</kbd>
-                </p>
-                <p className="muted small">
-                  1 ekran: Start bosing, o‘yinga qayting — tarjima o‘yin ustida chiqadi. Ba’zi to‘liq
-                  ekran o‘yinlarda borderless yoki windowed rejim kerak.
-                </p>
-              </>
-            )}
+            <p>
+              Yoqish/o‘chirish <kbd>{toggleLabel}</kbd>
+              {' · '}
+              Skrinshot <kbd>{snipLabel}</kbd>
+            </p>
+            <p className="muted small">
+              1 ekran: Start bosing, o‘yinga qayting — tarjima o‘yin ustida chiqadi. Ba’zi to‘liq
+              ekran o‘yinlarda borderless yoki windowed rejim kerak.
+            </p>
           </div>
         </div>
       </section>
@@ -383,17 +368,8 @@ export default function App() {
           <div className="empty hud-frame">
             <h2>Tarjima o‘yin ustida ham chiqadi</h2>
             <p>
-              {webLive ? (
-                <>
-                  Start, keyin <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> — kesilgan matn avtomatik
-                  tarjima qilinadi.
-                </>
-              ) : (
-                <>
-                  <kbd>{toggleLabel}</kbd> yoki Start, keyin o‘yinga qayting. <kbd>{snipLabel}</kbd>{' '}
-                  bilan joyni belgilang — tarjima burchakda ochiladi.
-                </>
-              )}
+              <kbd>{toggleLabel}</kbd> yoki Start, keyin o‘yinga qayting. <kbd>{snipLabel}</kbd>{' '}
+              bilan joyni belgilang — tarjima burchakda ochiladi.
             </p>
           </div>
         )}
