@@ -5,7 +5,6 @@ import { imageFingerprint, readClipboardImage } from './lib/clipboard'
 import { codeToVk, hotkeyLabel } from './lib/hotkey'
 import { prepareImage } from './lib/image'
 import { detectNative } from './lib/platform'
-import { canOpenPip, notifyTranslation, openPipWindow, renderPip } from './lib/pipOverlay'
 import { loadHistory, loadSettings, saveHistory, saveSettings } from './lib/storage'
 import { translateScreenshot } from './lib/translate'
 import type { Settings, TranslationResult } from './types'
@@ -29,7 +28,6 @@ export default function App() {
   const nativeRef = useRef(false)
   const settingsOpenRef = useRef(false)
   const ingestRef = useRef<(image: string) => void>(() => {})
-  const pipRef = useRef<Window | null>(null)
   const seenClipRef = useRef('')
 
   const [settings, setSettings] = useState<Settings>(() => loadSettings())
@@ -46,16 +44,6 @@ export default function App() {
   busyRef.current = busy
   settingsOpenRef.current = settingsOpen
 
-  const closePip = useCallback(() => {
-    const win = pipRef.current
-    pipRef.current = null
-    try {
-      win?.close()
-    } catch {
-      /* ignore */
-    }
-  }, [])
-
   const applyItem = useCallback((item: TranslationResult) => {
     setCurrent(item)
     setHistory((prev) => {
@@ -67,11 +55,6 @@ export default function App() {
     setBusy(false)
     setError('')
     busyRef.current = false
-    const pip = pipRef.current
-    if (pip && !pip.closed) {
-      renderPip(pip, { status: 'done', translation: item.translation, note: item.note })
-    }
-    notifyTranslation(item.translation)
   }, [])
 
   const loadLastResult = useCallback(async () => {
@@ -88,8 +71,6 @@ export default function App() {
       busyRef.current = true
       setBusy(true)
       setError('')
-      const pip = pipRef.current
-      if (pip && !pip.closed) renderPip(pip, { status: 'busy' })
       try {
         const prepared = nativeRef.current ? image : await prepareImage(image)
         const payload = await translateScreenshot(prepared, settings.apiKey)
@@ -106,7 +87,6 @@ export default function App() {
         setError(message)
         busyRef.current = false
         setBusy(false)
-        if (pip && !pip.closed) renderPip(pip, { status: 'error', error: message })
       }
     },
     [applyItem, settings.apiKey],
@@ -206,10 +186,7 @@ export default function App() {
   }, [loadLastResult, native])
 
   useEffect(() => {
-    if (native !== false || !active) {
-      if (!active) closePip()
-      return
-    }
+    if (native !== false || !active) return
 
     let cancelled = false
     let timer = 0
@@ -255,7 +232,7 @@ export default function App() {
       window.removeEventListener('focus', onFocus)
       document.removeEventListener('visibilitychange', onFocus)
     }
-  }, [active, closePip, native])
+  }, [active, native])
 
   useEffect(() => {
     function onPaste(e: ClipboardEvent) {
@@ -278,32 +255,9 @@ export default function App() {
     saveSettings(next)
   }
 
-  async function togglePower() {
+  function togglePower() {
     setError('')
-    if (active) {
-      setActive(false)
-      closePip()
-      return
-    }
-    if (native === false) {
-      try {
-        await Notification.requestPermission()
-      } catch {
-        /* ignore */
-      }
-      if (canOpenPip()) {
-        try {
-          const win = await openPipWindow()
-          pipRef.current = win
-          win?.addEventListener('pagehide', () => {
-            if (pipRef.current === win) pipRef.current = null
-          })
-        } catch {
-          /* PiP ixtiyoriy */
-        }
-      }
-    }
-    setActive(true)
+    setActive((value) => !value)
   }
 
   const snipLabel = hotkeyLabel(settings.hotkey)
@@ -336,9 +290,7 @@ export default function App() {
           <button
             type="button"
             className={`power ${active ? 'stop' : 'start'}`}
-            onClick={() => {
-              void togglePower()
-            }}
+            onClick={togglePower}
           >
             <strong>{active ? 'Stop' : 'Start'}</strong>
             <span>{active ? 'Tarjimonni o‘chirish' : 'Tarjimonni yoqish'}</span>

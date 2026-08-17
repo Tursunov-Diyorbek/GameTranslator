@@ -112,7 +112,11 @@ async function tryModel(apiKey: string, model: string, base64: string): Promise<
 }
 
 export function getServerApiKey(fallback = ''): string {
-  return (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || fallback).trim()
+  const raw = (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || fallback).trim()
+  return raw
+    .replace(/^GEMINI_API_KEY\s*=\s*/i, '')
+    .replace(/^["']|["']$/g, '')
+    .trim()
 }
 
 export async function translateWithGemini(
