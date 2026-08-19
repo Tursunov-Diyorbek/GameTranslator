@@ -7,15 +7,18 @@ export type TranslationResult = {
   note: string
 }
 
+/** Rust `settings.json` da saqlaydigan yagona sozlamalar to'plami. */
 export type Settings = {
+  apiKey: string
+  targetLang: string
+  uiLang: string
   hotkey: string
   toggleHotkey: string
-  apiKey: string
+  onboarded: boolean
 }
 
-export type CropRect = {
-  x: number
-  y: number
-  w: number
-  h: number
+export type Language = {
+  code: string
+  name: string
+  nativeName: string
 }

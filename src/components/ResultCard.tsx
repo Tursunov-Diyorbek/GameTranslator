@@ -1,35 +1,40 @@
+import { dict } from '../i18n'
 import type { TranslationResult } from '../types'
 
 type Props = {
   item: TranslationResult
+  uiLang: string
   busy?: boolean
 }
 
 function formatTime(ts: number) {
-  return new Date(ts).toLocaleTimeString('uz-UZ', {
+  // Tizim lokali ishlatiladi — vaqt formati interfeys tilidan mustaqil.
+  return new Date(ts).toLocaleTimeString(undefined, {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
   })
 }
 
-export function ResultCard({ item, busy }: Props) {
+export function ResultCard({ item, uiLang, busy }: Props) {
+  const t = dict(uiLang)
+
   return (
     <article className={`result hud-frame ${busy ? 'is-busy' : ''}`}>
       <div className="result-shot">
-        <img src={item.image} alt="Olingan skrinshot" />
+        <img src={item.image} alt={t.screenshotAlt} />
         <span className="time-chip">{formatTime(item.createdAt)}</span>
       </div>
       <div className="result-body">
         {item.original ? (
           <p className="original">{item.original}</p>
         ) : (
-          <p className="original muted">Asl matn topilmadi</p>
+          <p className="original muted">{t.noOriginal}</p>
         )}
-        <h3>{item.translation || 'Tarjima yo‘q'}</h3>
+        <h3>{item.translation || t.noTranslation}</h3>
         {item.note ? (
           <p className="note">
-            <span>Izoh</span>
+            <span>{t.note}</span>
             {item.note}
           </p>
         ) : null}

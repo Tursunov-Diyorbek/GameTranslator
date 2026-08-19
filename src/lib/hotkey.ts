@@ -21,20 +21,8 @@ export function hotkeyLabel(code: string): string {
   return n
 }
 
-export function codeToVk(code: string): number | null {
-  const n = normalizeHotkey(code)
-  if (/^Key[A-Z]$/.test(n)) return n.charCodeAt(3)
-  if (/^Digit[0-9]$/.test(n)) return 0x30 + Number(n.slice(5))
-  if (n === 'Space') return 0x20
-  const f = n.match(/^F([1-9]|1[0-2])$/)
-  if (f) return 0x70 + Number(f[1]) - 1
-  return null
-}
-
-export function eventMatchesHotkey(e: KeyboardEvent, hotkey: string): boolean {
-  if (e.repeat || e.ctrlKey || e.altKey || e.metaKey) return false
-  return e.code === normalizeHotkey(hotkey)
-}
+// Virtual key kodiga aylantirish Rust tomonda (`settings::code_to_vk`) bajariladi,
+// shunda hotkey kuzatuvchisi interfeys yuklanishini kutmaydi.
 
 export function eventToHotkey(e: KeyboardEvent): string | null {
   if (['Shift', 'Control', 'Alt', 'Meta', 'Escape', 'Tab', 'Enter', 'Backspace'].includes(e.key)) {

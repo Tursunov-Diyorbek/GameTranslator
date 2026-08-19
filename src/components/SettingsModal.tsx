@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import { openUrl } from '@tauri-apps/plugin-opener'
+import { dict } from '../i18n'
 import { eventToHotkey, hotkeyLabel } from '../lib/hotkey'
 import type { Settings } from '../types'
+import { STUDIO_URL } from './Onboarding'
 
 type Props = {
   open: boolean
@@ -12,17 +15,18 @@ type Props = {
 type ListenTarget = 'snip' | 'toggle' | null
 
 export function SettingsModal({ open, settings, onClose, onSave }: Props) {
-  const [hotkey, setHotkey] = useState(settings.hotkey)
-  const [toggleHotkey, setToggleHotkey] = useState(settings.toggleHotkey)
+  const [draft, setDraft] = useState(settings)
   const [listening, setListening] = useState<ListenTarget>(null)
   const [hint, setHint] = useState('')
   const snipBtnRef = useRef<HTMLButtonElement>(null)
   const toggleBtnRef = useRef<HTMLButtonElement>(null)
 
+  // Interfeys tili tanlovi darhol ko'rinishi kerak, shuning uchun qoralamadan olinadi.
+  const t = dict(draft.uiLang)
+
   useEffect(() => {
     if (!open) return
-    setHotkey(settings.hotkey)
-    setToggleHotkey(settings.toggleHotkey)
+    setDraft(settings)
     setListening(null)
     setHint('')
   }, [open, settings])
@@ -46,28 +50,30 @@ export function SettingsModal({ open, settings, onClose, onSave }: Props) {
       e.stopPropagation()
       const next = eventToHotkey(e)
       if (!next) return
+
       if (listening === 'snip') {
-        if (next === toggleHotkey) {
-          setHint('Bu tugma Start/Stop uchun band. Boshqa tugma tanlang.')
+        if (next === draft.toggleHotkey) {
+          setHint(t.keyTakenByToggle)
           setListening(null)
           return
         }
-        setHotkey(next)
+        setDraft((prev) => ({ ...prev, hotkey: next }))
       } else {
-        if (next === hotkey) {
-          setHint('Bu tugma skrinshot uchun band. Boshqa tugma tanlang.')
+        if (next === draft.hotkey) {
+          setHint(t.keyTakenBySnip)
           setListening(null)
           return
         }
-        setToggleHotkey(next)
+        setDraft((prev) => ({ ...prev, toggleHotkey: next }))
       }
+
       setHint('')
       setListening(null)
     }
 
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [open, listening, onClose, hotkey, toggleHotkey])
+  }, [open, listening, onClose, draft.hotkey, draft.toggleHotkey, t])
 
   if (!open) return null
 
@@ -80,15 +86,15 @@ export function SettingsModal({ open, settings, onClose, onSave }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-head">
-          <h2 id="settings-title">Sozlamalar</h2>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="Yopish">
+          <h2 id="settings-title">{t.settings}</h2>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label={t.close}>
             ✕
           </button>
         </div>
 
         <label className="field">
-          <span>Start / Stop tugmasi</span>
-          <p className="hint">Shu tugma tarjimonni yoqadi yoki o‘chiradi. O‘yin ichida ham ishlaydi.</p>
+          <span>{t.toggleKeyLabel}</span>
+          <p className="hint">{t.toggleKeyHint}</p>
           <button
             ref={toggleBtnRef}
             type="button"
@@ -98,13 +104,13 @@ export function SettingsModal({ open, settings, onClose, onSave }: Props) {
               toggleBtnRef.current?.focus()
             }}
           >
-            {listening === 'toggle' ? 'Tugmani bosing…' : hotkeyLabel(toggleHotkey)}
+            {listening === 'toggle' ? t.pressKey : hotkeyLabel(draft.toggleHotkey)}
           </button>
         </label>
 
         <label className="field">
-          <span>Skrinshot tugmasi</span>
-          <p className="hint">Faol paytda Win+Shift+S kabi kesish oynasini ochadi.</p>
+          <span>{t.snipKeyLabel}</span>
+          <p className="hint">{t.snipKeyHint}</p>
           <button
             ref={snipBtnRef}
             type="button"
@@ -114,25 +120,43 @@ export function SettingsModal({ open, settings, onClose, onSave }: Props) {
               snipBtnRef.current?.focus()
             }}
           >
-            {listening === 'snip' ? 'Tugmani bosing…' : hotkeyLabel(hotkey)}
+            {listening === 'snip' ? t.pressKey : hotkeyLabel(draft.hotkey)}
           </button>
+        </label>
+
+        <label className="field">
+          <span>{t.apiKeyLabel}</span>
+          <p className="hint">
+            {t.apiKeyHint}{' '}
+            <button type="button" className="link-btn" onClick={() => void openUrl(STUDIO_URL)}>
+              {t.getApiKey}
+            </button>
+          </p>
+          <input
+            type="password"
+            value={draft.apiKey}
+            placeholder="AIza…"
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => setDraft((prev) => ({ ...prev, apiKey: event.target.value }))}
+          />
         </label>
 
         {hint ? <p className="banner error">{hint}</p> : null}
 
         <div className="modal-actions">
           <button type="button" className="ghost-btn" onClick={onClose}>
-            Bekor
+            {t.cancel}
           </button>
           <button
             type="button"
             className="primary-btn"
             onClick={() => {
-              onSave({ hotkey, toggleHotkey, apiKey: settings.apiKey })
+              onSave({ ...draft, apiKey: draft.apiKey.trim() })
               onClose()
             }}
           >
-            Saqlash
+            {t.save}
           </button>
         </div>
       </div>

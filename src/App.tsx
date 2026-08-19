@@ -1,16 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Onboarding } from './components/Onboarding'
 import { ResultCard } from './components/ResultCard'
 import { SettingsModal } from './components/SettingsModal'
-import { imageFingerprint, readClipboardImage } from './lib/clipboard'
-import { codeToVk, hotkeyLabel } from './lib/hotkey'
+import { UpdateBanner } from './components/UpdateBanner'
+import { dict, errorText } from './i18n'
+import {
+  getArmed,
+  getLastResult,
+  getSettings,
+  listenAll,
+  saveSettings,
+  setArmed,
+  translateImage,
+} from './lib/bridge'
+import { hotkeyLabel } from './lib/hotkey'
 import { prepareImage } from './lib/image'
-import { detectNative } from './lib/platform'
-import { loadHistory, loadSettings, saveHistory, saveSettings } from './lib/storage'
-import { translateScreenshot } from './lib/translate'
+import { loadHistory, saveHistory } from './lib/storage'
 import type { Settings, TranslationResult } from './types'
 
-function newId() {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+/** Rust javob bermasa ishlatiladi — Rust tomondagi standart qiymatlar bilan bir xil. */
+const FALLBACK_SETTINGS: Settings = {
+  apiKey: '',
+  targetLang: 'uz',
+  uiLang: 'uz',
+  hotkey: 'KeyT',
+  toggleHotkey: 'F8',
+  onboarded: false,
 }
 
 function blobToDataUrl(blob: Blob) {
@@ -22,16 +37,21 @@ function blobToDataUrl(blob: Blob) {
   })
 }
 
+/** Matndagi `{nom}` joylarini <kbd> sifatida chizadi. */
+function withKeys(template: string, vars: Record<string, string>) {
+  return template.split(/(\{\w+\})/g).map((part, index) => {
+    const name = /^\{(\w+)\}$/.exec(part)?.[1]
+    const value = name ? vars[name] : undefined
+    return value ? <kbd key={index}>{value}</kbd> : <span key={index}>{part}</span>
+  })
+}
+
 export default function App() {
   const busyRef = useRef(false)
-  const activeRef = useRef(false)
-  const nativeRef = useRef(false)
   const settingsOpenRef = useRef(false)
-  const ingestRef = useRef<(image: string) => void>(() => {})
-  const seenClipRef = useRef('')
+  const settingsRef = useRef<Settings | null>(null)
 
-  const [settings, setSettings] = useState<Settings>(() => loadSettings())
-  const [native, setNative] = useState<boolean | null>(null)
+  const [settings, setSettings] = useState<Settings | null>(null)
   const [active, setActive] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -39,10 +59,12 @@ export default function App() {
   const [history, setHistory] = useState<TranslationResult[]>(() => loadHistory())
   const [current, setCurrent] = useState<TranslationResult | null>(null)
 
-  activeRef.current = active
-  nativeRef.current = native === true
   busyRef.current = busy
   settingsOpenRef.current = settingsOpen
+  settingsRef.current = settings
+
+  const uiLang = 'uz'
+  const t = dict(uiLang)
 
   const applyItem = useCallback((item: TranslationResult) => {
     setCurrent(item)
@@ -54,210 +76,121 @@ export default function App() {
     })
     setBusy(false)
     setError('')
-    busyRef.current = false
   }, [])
 
-  const loadLastResult = useCallback(async () => {
-    const res = await fetch('/api/last')
-    if (!res.ok) return
-    const item = (await res.json()) as TranslationResult
-    if (!item?.id) return
-    applyItem(item)
-  }, [applyItem])
+  /** Sozlamalarni Rust'ga yozadi va tozalangan javobni holatga qo'yadi. */
+  const persist = useCallback(async (patch: Partial<Settings>) => {
+    const base = settingsRef.current
+    if (!base) return
+    const next = { ...base, ...patch }
+    try {
+      const saved = await saveSettings(next)
+      setSettings(saved)
+    } catch (err) {
+      setError(errorText('uz', err instanceof Error ? err.message : String(err)))
+    }
+  }, [])
 
-  const runTranslate = useCallback(
-    async (image: string) => {
-      if (busyRef.current) return
-      busyRef.current = true
-      setBusy(true)
-      setError('')
+  // Sozlamalar Rust'dan olinadi.
+  useEffect(() => {
+    void (async () => {
       try {
-        const prepared = nativeRef.current ? image : await prepareImage(image)
-        const payload = await translateScreenshot(prepared)
-        applyItem({
-          id: newId(),
-          createdAt: Date.now(),
-          image: prepared,
-          original: payload.original,
-          translation: payload.translation,
-          note: payload.note,
+        const loaded = await getSettings()
+        setSettings({
+          ...loaded,
+          uiLang: 'uz',
+          targetLang: 'uz',
+          onboarded: loaded.onboarded || Boolean(loaded.apiKey?.trim()),
         })
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Tarjima muvaffaqiyatsiz'
-        setError(message)
-        busyRef.current = false
-        setBusy(false)
+        // Interfeys har qanday holatda ochilishi kerak — aks holda oyna bo'sh qoladi
+        // va foydalanuvchi sababini bilmaydi.
+        setSettings(FALLBACK_SETTINGS)
+        setError(errorText('uz', err instanceof Error ? err.message : String(err)))
       }
-    },
+    })()
+  }, [])
+
+  // Faol holat Rust'ga uzatiladi. Tugmalar sozlamalardan o'qilgani uchun bu yerda faqat holat.
+  useEffect(() => {
+    void setArmed(active)
+  }, [active])
+
+  // Ilova ochilganda Rust'dagi haqiqiy holatni olamiz.
+  useEffect(() => {
+    void getArmed().then(setActive, () => {})
+    void getLastResult().then(
+      (item) => {
+        if (item?.id) applyItem(item)
+      },
+      () => {},
+    )
+  }, [applyItem])
+
+  useEffect(
+    () =>
+      listenAll({
+        'gt:toggle': (on: boolean) => {
+          setError('')
+          setActive(on)
+        },
+        'gt:busy': () => {
+          setBusy(true)
+          setError('')
+        },
+        'gt:result': (item: TranslationResult) => {
+          applyItem(item)
+        },
+        'gt:error': (message: string) => {
+          setBusy(false)
+          setError(errorText('uz', message))
+        },
+        'gt:snip-cancel': () => {
+          setBusy(false)
+        },
+      }),
     [applyItem],
   )
 
-  ingestRef.current = (image) => {
-    void runTranslate(image)
-  }
-
+  // Qo'lda qo'yilgan rasm (Ctrl+V).
   useEffect(() => {
-    void detectNative().then(setNative)
-  }, [])
-
-  useEffect(() => {
-    if (native !== true) return
-    const snipVk = codeToVk(settings.hotkey)
-    const toggleVk = codeToVk(settings.toggleHotkey)
-    void fetch(
-      `/api/armed?on=${active ? '1' : '0'}&vk=${snipVk || 0}&toggleVk=${toggleVk ?? 0}`,
-    )
-  }, [active, native, settings.hotkey, settings.toggleHotkey])
-
-  useEffect(() => {
-    if (native !== true) return
-    const snipVk = codeToVk(settings.hotkey)
-    const toggleVk = codeToVk(settings.toggleHotkey)
-    if (!snipVk) return
-
-    const source = new EventSource(
-      `/api/hotkey?vk=${snipVk}&toggleVk=${toggleVk ?? 0}`,
-    )
-    source.onmessage = (ev) => {
-      const data = ev.data.trim()
-      if (data === 'toggle:1' || data === 'toggle:0') {
-        setError('')
-        setActive(data === 'toggle:1')
-        return
-      }
-      if (data === 'toggle') {
-        setError('')
-        setActive((value) => !value)
-        return
-      }
-      if (data === 'open' || data === 'cancel' || data === 'snip') return
-      if (data === 'busy') {
-        busyRef.current = true
-        setBusy(true)
-        setError('')
-        return
-      }
-      if (data === 'result') {
-        void loadLastResult()
-        return
-      }
-      if (data.startsWith('error:')) {
-        try {
-          const body = JSON.parse(data.slice(6)) as { error?: string }
-          setError(body.error || 'Tarjima muvaffaqiyatsiz')
-        } catch {
-          setError('Tarjima muvaffaqiyatsiz')
-        }
-        busyRef.current = false
+    async function runPaste(file: Blob) {
+      if (busyRef.current) return
+      setBusy(true)
+      setError('')
+      try {
+        const prepared = await prepareImage(await blobToDataUrl(file))
+        applyItem(await translateImage(prepared))
+      } catch (err) {
         setBusy(false)
-      }
-    }
-    return () => source.close()
-  }, [loadLastResult, native, settings.hotkey, settings.toggleHotkey])
-
-  useEffect(() => {
-    if (native !== true) return
-
-    async function syncFromServer() {
-      try {
-        const res = await fetch('/api/armed')
-        if (res.ok) {
-          const body = (await res.json()) as { on?: boolean }
-          setActive(Boolean(body.on))
-        }
-      } catch {
-        /* ignore */
-      }
-      try {
-        await loadLastResult()
-      } catch {
-        /* ignore */
+        setError(errorText('uz', err instanceof Error ? err.message : String(err)))
       }
     }
 
-    function onVisible() {
-      if (!document.hidden) void syncFromServer()
-    }
-
-    document.addEventListener('visibilitychange', onVisible)
-    return () => {
-      document.removeEventListener('visibilitychange', onVisible)
-    }
-  }, [loadLastResult, native])
-
-  useEffect(() => {
-    if (native !== false || !active) return
-
-    let cancelled = false
-    let timer = 0
-
-    const onFocus = () => {
-      void ingestClipboard()
-    }
-
-    async function ingestClipboard() {
-      if (cancelled || !activeRef.current || busyRef.current || settingsOpenRef.current) return
-      try {
-        const image = await readClipboardImage()
-        if (!image) return
-        const mark = imageFingerprint(image)
-        if (mark === seenClipRef.current) return
-        seenClipRef.current = mark
-        ingestRef.current(image)
-      } catch {
-        /* clipboard permission or empty */
-      }
-    }
-
-    void (async () => {
-      try {
-        const currentImage = await readClipboardImage()
-        if (!cancelled) {
-          seenClipRef.current = currentImage ? imageFingerprint(currentImage) : ''
-        }
-      } catch {
-        if (!cancelled) seenClipRef.current = ''
-      }
-      if (cancelled) return
-      timer = window.setInterval(() => {
-        void ingestClipboard()
-      }, 700)
-    })()
-
-    window.addEventListener('focus', onFocus)
-    document.addEventListener('visibilitychange', onFocus)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-      window.removeEventListener('focus', onFocus)
-      document.removeEventListener('visibilitychange', onFocus)
-    }
-  }, [active, native])
-
-  useEffect(() => {
-    function onPaste(e: ClipboardEvent) {
-      if (!activeRef.current || settingsOpenRef.current) return
-      const item = [...(e.clipboardData?.items ?? [])].find((entry) =>
+    function onPaste(event: ClipboardEvent) {
+      if (settingsOpenRef.current) return
+      const item = [...(event.clipboardData?.items ?? [])].find((entry) =>
         entry.type.startsWith('image/'),
       )
-      if (!item) return
-      const file = item.getAsFile()
+      const file = item?.getAsFile()
       if (!file) return
-      e.preventDefault()
-      void blobToDataUrl(file).then((url) => ingestRef.current(url))
+      event.preventDefault()
+      void runPaste(file)
     }
+
     window.addEventListener('paste', onPaste)
     return () => window.removeEventListener('paste', onPaste)
-  }, [])
+  }, [applyItem])
 
-  function persistSettings(next: Settings) {
-    setSettings(next)
-    saveSettings(next)
-  }
+  if (!settings) return null
 
-  function togglePower() {
-    setError('')
-    setActive((value) => !value)
+  if (!settings.onboarded && !settings.apiKey.trim()) {
+    return (
+      <Onboarding
+        settings={settings}
+        onDone={(apiKey) => void persist({ apiKey, onboarded: true, uiLang: 'uz', targetLang: 'uz' })}
+      />
+    )
   }
 
   const snipLabel = hotkeyLabel(settings.hotkey)
@@ -270,17 +203,17 @@ export default function App() {
           <span className="mark" aria-hidden="true" />
           <div>
             <p className="logo">GameTranslator</p>
-            <p className="tag">O‘yin matnini o‘zbekchaga</p>
+            <p className="tag">{t.appTagline}</p>
           </div>
         </div>
 
         <div className="top-actions">
           <span className={`status ${active ? 'on' : ''}`}>
             <i />
-            {active ? 'Faol' : 'Faol emas'}
+            {active ? t.statusOn : t.statusOff}
           </span>
           <button type="button" className="ghost-btn" onClick={() => setSettingsOpen(true)}>
-            Sozlamalar
+            {t.settings}
           </button>
         </div>
       </header>
@@ -290,39 +223,38 @@ export default function App() {
           <button
             type="button"
             className={`power ${active ? 'stop' : 'start'}`}
-            onClick={togglePower}
+            onClick={() => {
+              setError('')
+              setActive((value) => !value)
+            }}
           >
-            <strong>{active ? 'Stop' : 'Start'}</strong>
-            <span>{active ? 'Tarjimonni o‘chirish' : 'Tarjimonni yoqish'}</span>
+            <strong>{active ? t.stop : t.start}</strong>
+            <span>{active ? t.stopHint : t.startHint}</span>
           </button>
 
           <div className="meta">
             <p>
-              Yoqish/o‘chirish <kbd>{toggleLabel}</kbd>
+              {t.toggleKey} <kbd>{toggleLabel}</kbd>
               {' · '}
-              Skrinshot <kbd>{snipLabel}</kbd>
+              {t.snipKey} <kbd>{snipLabel}</kbd>
             </p>
-            <p className="muted small">
-              1 ekran: Start bosing, o‘yinga qayting — tarjima o‘yin ustida chiqadi. Ba’zi to‘liq
-              ekran o‘yinlarda borderless yoki windowed rejim kerak.
-            </p>
+            <p className="muted small">{t.fullscreenHint}</p>
           </div>
         </div>
       </section>
 
+      <UpdateBanner uiLang={uiLang} />
+      {settings.apiKey ? null : <p className="banner error">{t.keyMissing}</p>}
       {error ? <p className="banner error">{error}</p> : null}
-      {busy ? <p className="banner pulse">Matn o‘qilmoqda va tarjima qilinmoqda…</p> : null}
+      {busy ? <p className="banner pulse">{t.busy}</p> : null}
 
       <section className="stage">
         {current ? (
-          <ResultCard item={current} busy={busy} />
+          <ResultCard item={current} uiLang={uiLang} busy={busy} />
         ) : (
           <div className="empty hud-frame">
-            <h2>Tarjima o‘yin ustida ham chiqadi</h2>
-            <p>
-              <kbd>{toggleLabel}</kbd> yoki Start, keyin o‘yinga qayting. <kbd>{snipLabel}</kbd>{' '}
-              bilan joyni belgilang — tarjima burchakda ochiladi.
-            </p>
+            <h2>{t.emptyTitle}</h2>
+            <p>{withKeys(t.emptyBody, { toggle: toggleLabel, snip: snipLabel })}</p>
           </div>
         )}
       </section>
@@ -330,7 +262,7 @@ export default function App() {
       {history.length > 0 ? (
         <section className="history">
           <div className="history-head">
-            <h2>Tarix</h2>
+            <h2>{t.historyTitle}</h2>
             <button
               type="button"
               className="ghost-btn"
@@ -340,7 +272,7 @@ export default function App() {
                 saveHistory([])
               }}
             >
-              Tozalash
+              {t.historyClear}
             </button>
           </div>
           <div className="history-row">
@@ -352,7 +284,7 @@ export default function App() {
                 onClick={() => setCurrent(item)}
               >
                 <img src={item.image} alt="" />
-                <span>{item.translation || 'Matn yo‘q'}</span>
+                <span>{item.translation || t.historyNoText}</span>
               </button>
             ))}
           </div>
@@ -363,7 +295,7 @@ export default function App() {
         open={settingsOpen}
         settings={settings}
         onClose={() => setSettingsOpen(false)}
-        onSave={persistSettings}
+        onSave={(next) => void persist({ ...next, uiLang: 'uz', targetLang: 'uz' })}
       />
     </div>
   )

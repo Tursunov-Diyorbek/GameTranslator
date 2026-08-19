@@ -1,0 +1,54 @@
+[package]
+name = "app"
+version = "0.1.0"
+description = "Translates on-screen game text while you play"
+authors = ["Tursunov Diyorbek"]
+license = "MIT"
+repository = "https://github.com/Tursunov-Diyorbek/GameTranslator"
+edition = "2021"
+rust-version = "1.88.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11.3", features = [] }
+tauri-plugin-log = "2"
+base64 = "0.23.1"
+# native-tls => Windows schannel. rustls'ning aws-lc-sys'i NASM/CMake talab qiladi.
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "charset",
+  "http2",
+  "native-tls",
+  "system-proxy",
+] }
+arboard = "3.6.1"
+
+# Faqat kerakli formatlar — barchasi yoqilsa build vaqti bir necha barobar oshadi.
+image = { version = "0.25.10", default-features = false, features = [
+  "jpeg",
+  "png",
+  "bmp",
+] }
+tauri-plugin-opener = "2.5.4"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"
+
+[target.'cfg(windows)'.dependencies]
+# Tauri 0.61 ishlatadi — moslashtirilsa ikki marta kompilyatsiya bo'lmaydi.
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_DataExchange",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
