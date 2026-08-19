@@ -73,7 +73,7 @@ export default function App() {
       setError('')
       try {
         const prepared = nativeRef.current ? image : await prepareImage(image)
-        const payload = await translateScreenshot(prepared, settings.apiKey)
+        const payload = await translateScreenshot(prepared)
         applyItem({
           id: newId(),
           createdAt: Date.now(),
@@ -89,7 +89,7 @@ export default function App() {
         setBusy(false)
       }
     },
-    [applyItem, settings.apiKey],
+    [applyItem],
   )
 
   ingestRef.current = (image) => {

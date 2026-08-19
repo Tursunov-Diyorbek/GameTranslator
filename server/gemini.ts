@@ -4,18 +4,40 @@ export type TranslatePayload = {
   note: string
 }
 
-const FAST_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.5-flash']
+const FAST_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.6-flash']
 
 const PROMPT = `Skrinshotdagi matnni o'zbekchaga tarjima qil.
-Har bir qator, ro'yxat bandi va joylashuvni rasmdagidek saqla. Birlashtirma.
-JSON: {"original":["qator1","qator2"],"translation":["tarjima1","tarjima2"],"note":"1 qisqa jumla"}
-Nomlarni asl holda qoldir.`
+Har bir qator va joylashuvni saqla. Birlashtirma. Nomlarni asl holda qoldir.
+JSON: {"original":["qator1"],"translation":["tarjima1"],"note":"..."}
+note: tarjimani takrorlama. Shu matn o'yinda nima ekanini 1-2 jumlada tushuntir (masalan, vazifa, ogohlantirish, buyum tavsifi, dialog).`
 
 type GeminiErrorBody = {
   error?: { message?: string }
 }
 
-let cachedModel = ''
+type GeminiOkBody = GeminiErrorBody & {
+  output_text?: string
+  steps?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> }>
+  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
+}
+
+type RouteKind = 'google' | 'interactions'
+
+type Route = {
+  kind: RouteKind
+  model: string
+}
+
+let cachedRoute: Route | null = null
+
+function cleanKey(value: string): string {
+  return value
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .replace(/^GEMINI_API_KEY\s*=\s*/i, '')
+    .replace(/^["']+|["']+$/g, '')
+    .trim()
+}
 
 function asLines(value: unknown): string {
   if (Array.isArray(value)) {
@@ -40,83 +62,130 @@ function extractJson(text: string): TranslatePayload {
   }
 }
 
-async function generateContent(
-  apiKey: string,
-  model: string,
-  base64: string,
-  thinkingOff: boolean,
-  useSchema: boolean,
-): Promise<TranslatePayload> {
-  const generationConfig: Record<string, unknown> = {
-    temperature: 0,
-    maxOutputTokens: 800,
-    responseMimeType: 'application/json',
-  }
-  if (useSchema) {
-    generationConfig.responseSchema = {
-      type: 'OBJECT',
-      properties: {
-        original: { type: 'ARRAY', items: { type: 'STRING' } },
-        translation: { type: 'ARRAY', items: { type: 'STRING' } },
-        note: { type: 'STRING' },
-      },
-      required: ['original', 'translation', 'note'],
+function responseText(body: GeminiOkBody): string {
+  if (typeof body.output_text === 'string' && body.output_text.trim()) return body.output_text
+  const parts: string[] = []
+  for (const step of body.steps ?? []) {
+    if (step.type === 'thought') continue
+    for (const part of step.content ?? []) {
+      if (part.text) parts.push(part.text)
     }
   }
-  if (thinkingOff) {
-    generationConfig.thinkingConfig = { thinkingBudget: 0, thinkingLevel: 'MINIMAL' }
-  }
+  if (parts.length) return parts.join('')
+  return body.candidates?.[0]?.content?.parts?.map((part) => part.text ?? '').join('') ?? ''
+}
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              { text: PROMPT },
-              { inline_data: { mime_type: 'image/jpeg', data: base64 } },
-            ],
-          },
-        ],
-        generationConfig,
-      }),
+async function readBody(res: Response): Promise<GeminiOkBody> {
+  const raw = await res.text()
+  if (!raw.trim()) return {}
+  try {
+    return JSON.parse(raw) as GeminiOkBody
+  } catch {
+    return { error: { message: raw.slice(0, 280) } }
+  }
+}
+
+async function postJson(
+  url: string,
+  apiKey: string,
+  payload: Record<string, unknown>,
+  extraHeaders: Record<string, string> = {},
+): Promise<TranslatePayload> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey,
+      ...extraHeaders,
     },
-  )
-
-  const body = (await res.json()) as GeminiErrorBody & {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
-  }
+    body: JSON.stringify(payload),
+  })
+  const body = await readBody(res)
   if (!res.ok) throw new Error(body.error?.message || `Tarjima xatosi (${res.status})`)
-
-  const text = body.candidates?.[0]?.content?.parts?.map((part) => part.text ?? '').join('') ?? ''
+  const text = responseText(body)
   if (!text) throw new Error('AI javob qaytarmadi')
   return extractJson(text)
 }
 
-async function tryModel(apiKey: string, model: string, base64: string): Promise<TranslatePayload> {
-  try {
-    return await generateContent(apiKey, model, base64, true, true)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : ''
-    if (/thinking|schema|unknown|invalid argument/i.test(message)) {
-      return await generateContent(apiKey, model, base64, false, false)
-    }
-    throw err
+function googlePayload(base64: string): Record<string, unknown> {
+  return {
+    contents: [
+      {
+        parts: [
+          { text: PROMPT },
+          { inlineData: { mimeType: 'image/jpeg', data: base64 } },
+        ],
+      },
+    ],
+    generationConfig: {
+      temperature: 0,
+      maxOutputTokens: 400,
+      responseMimeType: 'application/json',
+      thinkingConfig: { thinkingBudget: 0, thinkingLevel: 'MINIMAL' },
+    },
   }
 }
 
+async function callRoute(route: Route, apiKey: string, base64: string): Promise<TranslatePayload> {
+  if (route.kind === 'interactions') {
+    return postJson(
+      'https://generativelanguage.googleapis.com/v1beta/interactions',
+      apiKey,
+      {
+        model: route.model,
+        input: [
+          { type: 'text', text: PROMPT },
+          { type: 'image', data: base64, mime_type: 'image/jpeg' },
+        ],
+        generation_config: {
+          max_output_tokens: 400,
+          thinking_level: 'minimal',
+          thinking_summaries: 'none',
+        },
+      },
+      { 'Api-Revision': '2026-05-20' },
+    )
+  }
+
+  return postJson(
+    `https://generativelanguage.googleapis.com/v1beta/models/${route.model}:generateContent`,
+    apiKey,
+    googlePayload(base64),
+  )
+}
+
+async function tryKey(apiKey: string, base64: string): Promise<TranslatePayload> {
+  const routes: Route[] = []
+  if (cachedRoute) routes.push(cachedRoute)
+  for (const model of FAST_MODELS) {
+    routes.push({ kind: 'google', model })
+    routes.push({ kind: 'interactions', model })
+  }
+
+  const seen = new Set<string>()
+  let lastError: unknown
+  for (const route of routes) {
+    const id = `${route.kind}:${route.model}`
+    if (seen.has(id)) continue
+    seen.add(id)
+    try {
+      const result = await callRoute(route, apiKey, base64)
+      cachedRoute = route
+      return result
+    } catch (err) {
+      lastError = err
+      const message = err instanceof Error ? err.message : ''
+      if (/quota/i.test(message)) throw err
+      if (cachedRoute && cachedRoute.kind === route.kind && cachedRoute.model === route.model) {
+        cachedRoute = null
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Tarjima muvaffaqiyatsiz')
+}
+
 export function getServerApiKey(fallback = ''): string {
-  const raw = (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || fallback).trim()
-  return raw
-    .replace(/^GEMINI_API_KEY\s*=\s*/i, '')
-    .replace(/^["']|["']$/g, '')
-    .trim()
+  return cleanKey(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || fallback)
 }
 
 export async function translateWithGemini(
@@ -130,21 +199,16 @@ export async function translateWithGemini(
 
   const comma = dataUrl.indexOf(',')
   const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl
-  const models = cachedModel ? [cachedModel, ...FAST_MODELS.filter((name) => name !== cachedModel)] : FAST_MODELS
 
-  let lastError: unknown
-  for (const model of models) {
-    try {
-      const result = await tryModel(key, model, base64)
-      cachedModel = model
-      return result
-    } catch (err) {
-      lastError = err
-      const message = err instanceof Error ? err.message : ''
-      if (/API_KEY|api key|permission denied|quota/i.test(message)) throw err
-      if (cachedModel === model) cachedModel = ''
+  try {
+    return await tryKey(key, base64)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : ''
+    if (/invalid authentication|oauth|unauthenticated|401/i.test(message)) {
+      throw new Error(
+        'Google kalitni rad etdi. https://aistudio.google.com/apikey dan yangi kalit oling va .env dagi GEMINI_API_KEY ni yangilang.',
+      )
     }
+    throw err instanceof Error ? err : new Error('Tarjima muvaffaqiyatsiz')
   }
-
-  throw lastError instanceof Error ? lastError : new Error('Tarjima muvaffaqiyatsiz')
 }

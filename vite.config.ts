@@ -4,7 +4,8 @@ import { globalHotkeyPlugin } from './server/globalHotkey.ts'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  if (env.GEMINI_API_KEY) process.env.GEMINI_API_KEY = env.GEMINI_API_KEY
+  const geminiKey = env.GEMINI_API_KEY?.replace(/^\uFEFF/, '').replace(/^["']+|["']+$/g, '').trim()
+  if (geminiKey) process.env.GEMINI_API_KEY = geminiKey
 
   return {
     plugins: [react(), globalHotkeyPlugin()],
